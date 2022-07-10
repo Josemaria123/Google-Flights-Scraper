@@ -11,7 +11,9 @@ import pandas as pd
 import sqlite3
 import numpy as np
 from selenium.webdriver.common.action_chains import ActionChains
-
+import datetime
+from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import NoSuchElementException
 '''
 Google Flights Scraper
 Author: Josemaria Saldias
@@ -22,7 +24,6 @@ class Scraper():
     #Rutas
     path_driver = r"C:\driver_chrome_selenium\chromedriver.exe"
     path_browser = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
-
     #Variables de clase
     options = webdriver.ChromeOptions()
     options.binary_location = path_browser   #-> Indicamos el path del binario de Brave
@@ -31,13 +32,16 @@ class Scraper():
     options.add_argument("window-size=1024,768")
     options.add_argument("--no-sandbox")
 
+    ignored_exceptions=(NoSuchElementException, StaleElementReferenceException,)
+
     service = Service(executable_path=path_driver)
 
-    def __init__(self, TIMEOUT=3, url="https://www.google.com/travel/flights?tfs=CBwQARoaagwIAhIIL20vMGRscXYSCjIwMjItMTEtMTEaGhIKMjAyMi0xMi0wOXIMCAISCC9tLzBkbHF2cAGCAQsI____________AUABQAFIAZgBAQ"):
+    def __init__(self, TIMEOUT=3, url="https://www.google.com/travel/flights?tfs=CBwQARoaagwIAhIIL20vMGRscXYSCjIwMjItMTEtMTEaGhIKMjAyMi0xMi0wOXIMCAISCC9tLzBkbHF2cAGCAQsI____________AUABQAFIAZgBAQ", destino="SLC"):
         self.TIMEOUT =TIMEOUT
         self.url = url
+        self.destino = destino
         self.driver = webdriver.Chrome(service=self.service, options=self.options)
-        self.wait = WebDriverWait(self.driver, 30)
+        self.wait = WebDriverWait(self.driver, 30, ignored_exceptions=self.ignored_exceptions)
 
     def getURL(self):
         self.driver.get(self.url)
@@ -81,7 +85,7 @@ class Scraper():
 
         return data
 
-    def parseData(self, data):
+    def parseData(self, data, f_salida, f_vuelta):
         regex = r"(?P<Hora_salida>\d{2}:\d{2})\s\s\W\s\s(?P<hora_llegada>\d{2}:\d{2})\W?(?P<dias_viaje>\d)?\s(?P<aerolinea1>\w+(?:\s)?(?:\w+)?)(?:,)? (?P<aerolinea2>[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:\W)?(?:\s)?(?:[a-zA-Z]+)?(?:,)?(?:\s)?(?:[a-zA-Z]+)?(?:\/)?([a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:,)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:,)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?P<duracion_vuelo>\d* \w (?:\d* min\s)?)(?P<codigos_destinos>\w+\W\w+) (?P<numero_escalas>\d) \w+(?P<duracion_escala> \d+ [a-z]? \d+ min)? (?P<escala1>\w+(\s)?(\w+)?(\s)?(\w+)?)(?:, (?P<escala2>\w+)?)?(?P<total_emisiones_co2> \d*,\d+ \w+ \w+ \w+ (?:\W?\s?\d+?\s?\W?\s?(?:de)?)?\w+\s?\w+\.?)? (?P<codigo_moneda>\w+) (?P<precio>[0-9]*,[0-9]*(?:,[0-9]*)?)"
         
         data_list = []
@@ -97,7 +101,7 @@ class Scraper():
                 continue
             else:
                 diccionario = match.groupdict()
-                diccionario['destino'] = destino
+                diccionario['destino'] = self.destino
                 diccionario["fecha_salida"] = f_salida
                 diccionario["fecha_vuelta"] = f_vuelta
                 data_list.append(diccionario)
@@ -113,7 +117,8 @@ class Scraper():
     def createDB(self, df):
         #Insertamos la data en la base de datos
         sqlite3.register_adapter(np.int64, int)    #-> especificamos que np.int64 corresponde a un integer. Esto se hace porque sqlite3 no soporta ese formato y debemos especificarlo o si no guarda el dato como un blob en forma binaria
-        connection = sqlite3.connect("Flights-data.db")
+        path_db = r'C:\Users\Josemaria Saldias\Flights-data.db'
+        connection = sqlite3.connect(path_db) #Guardo la tabla aqui por razones de crontab
 
         cursor = connection.cursor()
 
@@ -134,7 +139,7 @@ class Scraper():
                             escala2 TEXT, 
                             total_emisiones_co2 TEXT,
                             codigo_moneda TEXT, 
-                            precio DOUBLE,
+                            precio INTEGER,
                             destino TEXT,
                             fecha_salida TEXT,
                             fecha_vuelta TEXT,
@@ -149,7 +154,8 @@ class Scraper():
 
     def updateDB(self, df):
         sqlite3.register_adapter(np.int64, int)
-        connection = sqlite3.connect("Flights-data.db")
+        path_db = r"C:\Users\Josemaria Saldias\Flights-data.db"
+        connection = sqlite3.connect(path_db)
         cursor = connection.cursor()
 
         for i in range(len(df)):
@@ -158,14 +164,69 @@ class Scraper():
         connection.commit()
         connection.close()
 
+    def parsearMuchasFechas(self, destino, lista_fechas):
+        data_list = []
+        regex = r"(?P<Hora_salida>\d{2}:\d{2})\s\s\W\s\s(?P<hora_llegada>\d{2}:\d{2})\W?(?P<dias_viaje>\d)?\s(?P<aerolinea1>\w+(?:\s)?(?:\w+)?)(?:,)? (?P<aerolinea2>[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:\W)?(?:\s)?(?:[a-zA-Z]+)?(?:,)?(?:\s)?(?:[a-zA-Z]+)?(?:\/)?([a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:,)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:,)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?:[a-zA-Z]+)?(?:\s)?(?P<duracion_vuelo>\d* \w (?:\d* min\s)?)(?P<codigos_destinos>\w+\W\w+) (?P<numero_escalas>\d) \w+(?P<duracion_escala> \d+ [a-z]? \d+ min)? (?P<escala1>\w+(\s)?(\w+)?(\s)?(\w+)?)(?:, (?P<escala2>\w+)?)?(?:, (?P<escala3>\w+)?)?(?P<total_emisiones_co2> \d*,\d+ \w+ \w+ \w+ (?:\W?\s?\d+?\s?\W?\s?(?:de)?)?\w+\s?\w+\.?)? (?P<codigo_moneda>\w+) (?P<precio>[0-9]*,[0-9]*(?:,[0-9]*)?)"
 
+        time.sleep(self.TIMEOUT)
+        boton_destino = self.wait.until(EC.visibility_of_element_located((By.XPATH, '//input[@placeholder="¿A dónde quieres ir?"]')))
+        ActionChains(self.driver).send_keys_to_element(boton_destino, destino).perform()
 
+        opcion = self.wait.until(EC.visibility_of_element_located((By.XPATH, f'//li[@data-code="{destino}"]')))
+        self.driver.execute_script("arguments[0].click()", opcion)
+
+        for fechas in range(len(lista_fechas)-1):
+            try:
+                salida = self.wait.until(EC.visibility_of_element_located((By.XPATH, '//input[@placeholder="Salida"]')))#-> Boton fecha salida
+                self.driver.execute_script("arguments[0].click()", salida)
+                fecha_ida = self.wait.until(EC.visibility_of_element_located((By.XPATH, f'//div[@data-iso="{lista_fechas[fechas].strftime("%Y-%m-%d")}"]')))#Campo fecha ida
+                self.driver.execute_script("arguments[0].click()", fecha_ida)
+
+                time.sleep(3)
+                fecha_vuelta = self.wait.until(EC.visibility_of_element_located((By.XPATH, f'//div[@data-iso="{lista_fechas[-1].strftime("%Y-%m-%d")}"]')))#Campo fecha vuelta
+                self.driver.execute_script("arguments[0].click()", fecha_vuelta)
+                boton_hecho = self.wait.until(EC.visibility_of_element_located((By.XPATH, '//span[@class="VfPpkd-vQzf8d"]')))
+                self.driver.execute_script("arguments[0].click()", boton_hecho) #el span va cambiando en la pagina....
+                
+                time.sleep(10) #Se ejecuta la busqueda, debo esperar acá
+                self.wait.until(EC.element_to_be_clickable((By.XPATH, '//button[@class="VfPpkd-LgbsSe VfPpkd-LgbsSe-OWXEXe-k8QpJ VfPpkd-LgbsSe-OWXEXe-Bz112c-M1Soyc VfPpkd-LgbsSe-OWXEXe-dgl2Hf nCP5yc AjY5Oe LQeN7 nJawce OTelKf iIo4pd"]'))).click()
+                time.sleep(5)
+                data = self.wait.until(EC.visibility_of_all_elements_located((By.XPATH, '//ul[@class="Rk10dc"]/li[@class="pIav2d"]')))
+                
+                for text_data in data:
+                    text_data_fixed = text_data.text.replace("\n", ' ') #Genero el string
+                    print(text_data_fixed)
+                    match = re.search(regex, text_data_fixed)
+                    if match == None:
+                        print(f"\nEsta frase "{text_data_fixed}" no se pudo clasificar\n")
+                        c+=1
+                        continue
+                    else:
+                        diccionario = match.groupdict()
+                        diccionario['destino'] = destino
+                        diccionario["fecha_salida"] = lista_fechas[0].strftime("%Y-%m-%d")
+                        diccionario["fecha_vuelta"] = lista_fechas[len(lista_fechas)-1].strftime("%Y-%m-%d")
+                        data_list.append(diccionario)
+                
+                
+            except:
+                break    
+        
+        print(f"\nSe han encontrado {len(data_list)} elementos\n")
+        self.driver.close() 
+        return json.dumps(data_list)
+
+                       
 scraper = Scraper()
 scraper.getURL()
-destino, f_salida, f_vuelta = scraper.introducirFechasViaje()
-scraped_data = scraper.collectData(destino, f_salida, f_vuelta)
-data_json = scraper.parseData(scraped_data)
-df = pd.read_json(data_json)
 
+start = datetime.datetime.strptime(str(datetime.date.today()), "%Y-%m-%d")
+end = datetime.datetime.strptime("2022-08-01", "%Y-%m-%d") #Parsea maximo hasta el 10 de Diciembre
+date_generated = pd.date_range(start, end)
+data_json = scraper.parsearMuchasFechas("SLC", date_generated)
+df = pd.read_json(data_json)
 #scraper.createDB(df)
 scraper.updateDB(df)
+print(df.head())
+print(df.shape)
+
